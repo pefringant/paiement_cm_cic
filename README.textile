@@ -1,0 +1,133 @@
+h1. Plugin du module de paiement sécurisé Crédit Mutuel / CIC v3.0
+
+Ce plugin permet d'installer simplement et rapidement le module de paiement sécurisé proposé par le Crédit Mutuel et le CIC. Il fonctionne avec les versions 4 et 5 de PHP et les versions 1.2 et 1.3 de CakePHP.
+
+La lecture préalable de la "documentation technique":http://www.cmcicpaiement.fr/fr/info/documentations/CM-CIC_paiement_documentation_technique_v3_0.pdf du module de paiement est chaudement recommandée.
+
+h2. 1. Installation
+
+Pour installer le plugin, il suffit d'exécuter la commande suivante depuis le répertoire APP/plugins :
+
+<pre><code>git clone git://github.com/kalt/paiement_cm_cic</code></pre>
+
+h2. 2. Configuration
+
+Le plugin inclut un Composant qui permet d'une part de créer la requête de paiement et d'autre part de décoder la réponse du serveur de paiement.
+
+L'appel du Composant se fait de la façon suivante :
+
+<pre><code>class CommandesController extends AppController {
+	var $components = array(
+		'PaiementCmCic.PaiementCmCic' => array(
+			'CMCIC_SERVEUR' => 'https://paiement.creditmutuel.fr/test/',
+			'CMCIC_VERSION' => '3.0',
+			'CMCIC_TPE' => '1234567',
+			'CMCIC_CODESOCIETE' => 'societe',
+			'CMCIC_URLOK' => 'http://www.monsite.fr/commandes/retour_ok',
+			'CMCIC_URLKO' => 'http://www.monsite.fr/commandes/retour_ko',
+			'CMCIC_CLE' => 'ABCDEF123456789...',
+		)
+	);
+}</code></pre>
+
+Les renseignements à donner sont les suivants :
+
+* CMCIC_SERVEUR : URL du serveur de paiement
+* CMCIC_VERSION : Version actuelle du module de paiement
+* CMCIC_TPE : Code du TPE fourni par la banque
+* CMCIC_CODESOCIETE : Code de la société fourni par la banque
+* CMCIC_URLOK : URL de la page de retour après un paiement accepté
+* CMCIC_URLKO : URL de la page de retour après un paiement refusé
+* CMCIC_CLE : Clé secrète founie par la banque
+
+h2. 3. Création d'une requête de paiement
+
+Voici un exemple simple pour créer une requête de paiement dans notre Contrôleur Commandes :
+
+<pre><code>function paiement() {
+	// Lecture du panier, calcul du prix, etc.
+	...
+	
+	// Définition des paramètres de la requête de paiement
+	$params = array(
+		'montant' => $total_ttc,                    // Montant sans espaces au format xxxx.yy
+		'reference' => $commande['Commande']['id'], // Référence de la commande, unique, alphanumérique, 12 caractères maximum
+		'email' => $commande['Client']['email'],    // Adresse email du client
+	);
+
+	// On génère la requête avec ces paramètres
+	$request = $this->PaiementCmCic->call_request($params);
+	
+	// On transmet à la vue
+	$this->set('request', $request);
+}</code></pre>
+
+Voyons maintenant la génération du formulaire de paiement dans la vue :
+
+<pre><code>// APP/views/commandes/paiement.ctp
+<form action="<?php echo $request['url']; ?>" method="post">
+	<input type="hidden" name="version"        id="version"        value="<?php echo $request['version'];?>" />
+	<input type="hidden" name="TPE"            id="TPE"            value="<?php echo $request['TPE'];?>" />
+	<input type="hidden" name="date"           id="date"           value="<?php echo $request['date'];?>" />
+	<input type="hidden" name="montant"        id="montant"        value="<?php echo $request['montant'] . $request['devise'];?>" />
+	<input type="hidden" name="reference"      id="reference"      value="<?php echo $request['reference'];?>" />
+	<input type="hidden" name="MAC"            id="MAC"            value="<?php echo $request['MAC'];?>" />
+	<input type="hidden" name="url_retour"     id="url_retour"     value="<?php echo $request['url_retour'];?>" />
+	<input type="hidden" name="url_retour_ok"  id="url_retour_ok"  value="<?php echo $request['url_retour_ok'];?>" />
+	<input type="hidden" name="url_retour_err" id="url_retour_err" value="<?php echo $request['url_retour_err'];?>" />
+	<input type="hidden" name="lgue"           id="lgue"           value="<?php echo $request['lgue'];?>" />
+	<input type="hidden" name="societe"        id="societe"        value="<?php echo $request['societe'];?>" />
+	<input type="hidden" name="texte-libre"    id="texte-libre"    value="<?php echo $request['texte-libre'];?>" />
+	<input type="hidden" name="mail"           id="mail"           value="<?php echo $request['mail'];?>" />
+	
+	<input type="submit" value="Procéder au paiement"/>
+</form></code></pre>
+
+Lorsque le client clique sur le bouton "Procéder au paiement", il est redirigé sur le serveur de paiement de la banque.
+
+h2. 4. Analyse de la réponse de la banque
+
+Lors de la création du TPE auprès de la banque, il faut fournir une URL de retour automatique, qui est utilisée par le serveur de paiement pour envoyer le résultat d'une tentative de paiement. Voyons un exemple de script qui traite cette réponse, accessible via l'URL http://www.monsite.fr/commandes/retour_auto.
+
+Toujours dans notre Contrôleur Commandes :
+
+<pre><code>function retour_auto() {
+	// Décodage de la réponse
+	$response = $this->PaiementCmCic->call_response();
+	
+	// Si le sceau de contrôle correspond bien à celui de la requête de paiement
+	if ($response['MAC_match']) {
+		$this->Commande->id = $response['reference'];
+
+		switch ($response['code-retour']) {
+			case "Annulation" :
+				// On met à jour le statut de la commande
+				break;
+			
+			case "payetest":
+			case "paiement":
+				// On met à jour le statut de la commande
+				break;
+		}
+	}
+	
+	// On transmet à la vue le "reçu" à répondre
+	$this->set('receipt', $response['receipt']);
+	
+	// Pas de layout autout de cette vue
+	$this->autoLayout = false;
+}</code></pre>
+
+Terminons par la vue de cette action :
+
+<pre><code><?php
+// APP/views/commandes/retour_auto.ctp
+header("Pragma: no-cache");
+header("Content-type: text/plain");
+
+printf(CMCIC_CGI2_RECEIPT, $receipt);
+?></code></pre>
+
+C'est terminé, les tests peuvent commencer.
+
+Lors de la mise en production du TPE, il suffira de changer l'URL du serveur de paiement dans le Composant ('CMCIC_SERVEUR').
